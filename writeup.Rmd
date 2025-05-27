@@ -1,0 +1,392 @@
+---
+title: "Write-up"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+# reading in necessary packages/data
+knitr::opts_chunk$set(echo = TRUE)
+library(readxl)
+library(tidyverse)
+library(lme4)
+```
+
+```{r, include=FALSE}
+flow_data <- read_excel("graphing.xlsx") #, sheet = "Data")
+flow_data <- flow_data %>% drop_na()
+flow_data <- as.data.frame(flow_data[flow_data$`Take out` == "N",])
+columns <-c("Gams", "Total", "Commit", "Singlets Count/uL")
+flow_data[, columns] <- lapply(columns, function(x) as.numeric(flow_data[[x]]))
+
+flow_data[flow_data$Plate == "SGE_0", c("Plate")] <- "SGE-4"
+
+flow_data$Well <- paste(flow_data$Treatments_FULL, flow_data$Plate)
+flow_data$Hem_Treat <- paste(flow_data$Hematocrit, flow_data$Treatment)
+flow_data$PercentSinglets <- flow_data$`Singlets Count`/flow_data$`All Events Count`
+
+flow_data$Treatment <- factor(flow_data$Treatment, levels = c("PBS", "F", "M"))
+```
+
+
+
+
+## Experimental protocol for cytometry readings
+
+Malaria parasite culture was first synchronized via sorbitol prior to preparation of each well plate. Each sample was given one of three different salivary treatments (male saliva, or female saliva, or PBS control), as well as one of two hematocrit treatments (0.5% or 1%); parasitemia was also the same across all wells/plates. Five different replicates were made for each treatment combination, resulting in 30 samples prepared for each well plate. Remaining wells on plate were either filled with water or left empty (if on the edge). Four well plates were prepared in total, each created and measured on different days. 
+
+<center>
+![Well plate set up: five replicates (rows 1-5) are made for each combination of hematocrit treatments (0.5% and 1.0%) and salivary treatment (Female, Male, and PBS control). Replicate samples were generally filled in descending order (see arrow). Remaining non-edge wells are filled with water.](wells.png)
+</center>
+
+<br>
+
+After two days (to allow for replication and investment), cell counts were taken via flow cytometry for each well plate. Samples were dyed to separate uninfected RBCs, asexual iRBCs, and gametocytes. First gate of cytometry results gated for singlets, second separates uRBCs from iRBCs (`iRBCs Count`, includes sexual and asexual), and the final gating separates uRBCs, asexual RBCs, and gametocytes (`iRBC_tdT+ Count`). We also calculate a proportion of cells commited to gametocytes (`Commit`) by dividing counts of gametocytes by counts of total iRBCs, i.e. $\frac{\text{iRBC_tdT+ Count}}{\text{iRBCs Count}}$. 
+
+
+
+### KEY
+
+Key for variable names (in code).
+
+* `iRBC_tdT+ Count` & `iRBCs Count`: Counts of gametocytes and total infected (asexual or gams) RBCs respectively, continuous. **This is the primary response variable.**
+* `Treatment`: Salivary treatment, i.e. treatment of PBS control or male or female saliva (categorical, three levels: `PBS, F, M`). **This is the primary treatment of interest.**
+* `Hematocrit`: Hematocrit treatment, i.e. 0.5% or 1.0% (*stored as categorical*, two levels: `0.5, 1.0`).
+* `Plate` (ID): Which plate sample was from (categorical, four levels: `SGE-1, SGE-2, SGE-3, SGE-4`). 
+* `Replicate` (ID): Which replicate (row) of plate sample was from (categorical, five levels: `R1, R2, R3, R4, R5` )
+
+
+
+
+
+## RUNNING MODELS
+
+For the following models, we use `glmer` from the `lme4` package to fit generalized linear mixed-effects model, as the data is binomial (either an iRBC is a gametocyte - success - or is not - failure) and requires a mixed-effects model (to account for the potential effects of the individual plates, rows, etc.).
+
+
+### Earlier (incorrect) models
+
+A note on earlier reports regarding the results of the analysis - earlier I reported that results were not significant. However, after extensively retesting the code/models and considering the potential variables to include/exclude, this may be an incorrect conclusion based on erroneous code, displayed below. There are two issues with the model as written here:
+
+1. Hematocrit is here is included as a random effect, and not a fixed effect. However, while incorrect in terms of what the model represents, based on outputs from models with this error, the error ultimately doesn't change what conclusions would be drawn.
+2. The much bigger issue is what variable is being used for `weights`. For binomial data, `glmer` allows for two methods for imputing data. One is to input the response variable data as a data frame of two columns, the number of successes and number of failures (which would be number of gametocytes and non-gametocytes out of the counted infected RBCs). The other method is to input data as *proportions*, which necessitates use of the `weights` argument, which should be supplied with the total number of trials which are being divided into successes or failures - i.e., the total number of asexual and sexual iRBCs, or `iRBCs Count`. Unfortunately, it seems what was supplied to `weights` was instead `iRBC_tdT+ Count`, the total number of successes. This change leads to a completely different conclusion that there is no significant difference in commitment between samples exposed to PBS and samples exposed to salivary gland extracts. Current coding for the models instead uses the data frame input for the binomial data to prevent future issues. 
+
+For comparison, here is the output from utilizing `iRBC_tdT+ Count` (incorrect):
+```{r}
+fit_past <- glmer(Commit ~ Treatment + (1 | Hematocrit) + (1 | Replicate) + (1 | Plate), weights = `iRBC_tdT+ Count`, data = flow_data, family = "binomial")
+summary(fit_past)
+```
+
+Here is the output from utilizing `iRBCs Count` (correct - though not the entire model, just what variable is supplied to `weights`):
+```{r}
+fit_past <- glmer(Commit ~ Treatment + (1 | Hematocrit) + (1 | Replicate) + (1 | Plate), weights = `iRBCs Count`, data = flow_data, family = "binomial")
+summary(fit_past)
+```
+
+
+### Base GLM mixed models
+
+These models are all generally structured to have commitment proportion (or rather, number of gametocytes versus asexual iRBCs) as a response variable, salivary treatment and hematocrit treatment as fixed effects, and plate and replicate numbers as fixed effects. The code below also tests out minor variations in this structure, mainly changing the model to have replicate nested within plate ID, or changing the data to exclude certain plates. However, we've found that regardless of minor variations, there is an overal pattern that *there is no significant difference in commitment between samples exposed to male salivary gland extracts versus PBS control, but there is a significant difference between female saliva exposed samples versus PBS control.*
+
+
+#### 1.
+Treatment + Hematocrit as fixed effects, Plate & Replicate as random effects. 
+
+```{r}
+# using cbind of successes & failures
+fit_1 <- glmer(cbind(`iRBC_tdT+ Count`, `iRBCs Count` - `iRBC_tdT+ Count`) ~ Treatment + Hematocrit + (1 | Plate) + (1|Replicate), data = flow_data, family = "binomial")
+summary(fit_1)
+```
+
+
+#### 2.
+Treatment + Hematocrit as fixed effects, Plate & Replicate as random - same as before, but replicate is nested within plate (each plate has a `R1`, `R2`, etc.)
+
+```{r}
+fit_1 <- glmer(cbind(`iRBC_tdT+ Count`, `iRBCs Count` - `iRBC_tdT+ Count`) ~ Treatment + Hematocrit + (1 | Plate/Replicate), data = flow_data, family = "binomial")
+summary(fit_1)
+```
+
+
+
+
+
+
+### Excluding Plate 2
+
+Plate 2 has multiple wells where events were clustering outside the expected are of the first gate, indicating potential issues with sampling (due to settlement of cells?). We re-run the models with the exclusion of Plate 2. 
+
+```{r}
+flow_data_minus2 <- flow_data[flow_data$Plate != "SGE-2", ]
+```
+
+
+#### 1.
+Treatment + Hematocrit as fixed effects, Plate & Replicate as random
+
+```{r}
+# using cbind of successes & failures
+fit_1 <- glmer(cbind(`iRBC_tdT+ Count`, `iRBCs Count` - `iRBC_tdT+ Count`) ~ Treatment + Hematocrit + (1 | Plate) + (1|Replicate), data = flow_data_minus2, family = "binomial")
+summary(fit_1)
+```
+
+
+#### 2.
+Treatment + Hematocrit as fixed effects, Plate & Replicate as randomf with Replicate is nested within Plate.
+
+```{r}
+fit_1 <- glmer(cbind(`iRBC_tdT+ Count`, `iRBCs Count` - `iRBC_tdT+ Count`) ~ Treatment + Hematocrit + (1 | Plate/Replicate), data = flow_data_minus2, family = "binomial")
+summary(fit_1)
+```
+
+
+
+### Excluding Plate 4
+
+Plate 4 likewise has issues where points would cluster outside the first gate (though unlike Plate 2, the main gate still had many points within them). It also had more cases where boundary between iRBCs and uRBCs were a bit more blurred in gate 2 and 3 (contrasted to Plate 2's sparser points, but still clear boundaries between points in versus outside of gate 2 & 3). Models here exlucde Plate 4 (but have Plate 2). 
+
+```{r}
+flow_data_minus4 <- flow_data[flow_data$Plate != "SGE-4", ]
+```
+
+
+#### 1.
+Treatment + Hematocrit as fixed effects, Plate & Replicate as random
+
+```{r}
+# using cbind of successes & failures
+fit_1 <- glmer(cbind(`iRBC_tdT+ Count`, `iRBCs Count` - `iRBC_tdT+ Count`) ~ Treatment + Hematocrit + (1 | Plate) + (1|Replicate), data = flow_data_minus4, family = "binomial")
+summary(fit_1)
+```
+
+
+#### 2.
+Treatment + Hematocrit as fixed effects, Plate & Replicate as randomf with Replicate is nested within Plate.
+
+```{r}
+fit_1 <- glmer(cbind(`iRBC_tdT+ Count`, `iRBCs Count` - `iRBC_tdT+ Count`) ~ Treatment + Hematocrit + (1 | Plate/Replicate), data = flow_data_minus4, family = "binomial")
+summary(fit_1)
+```
+
+
+
+## OTHER PLOTS
+
+### Comparison of commitment
+
+Plot of (normalized) commitment proportion among salivary and hematocrit treatments. Violin plot shows distribution, the colored points show mean proportion of iRBCs in sample consisting of gametocytes (commitment), with error bars showing standard deviation. Normalization was done by subtracting weighted mean of control (weighted by singlets counts) from all data points, a process that was done individually for each plate to account for singlets count differences between plates. 
+```{r}
+normalized <- flow_data
+
+for (plate in unique(flow_data$Plate)) {
+  # get weighted mean of control for the plate
+  control_commits <- normalized[normalized$Plate == plate & normalized$Treatment == "PBS", c("Commit")]
+  weight_control <- normalized[normalized$Plate == plate & normalized$Treatment == "PBS", c("Singlets Count")]
+  mean_control <- weighted.mean(control_commits,weight_control)
+  
+  # normalize
+  normalized[normalized$Plate == plate, c("Commit")] <- normalized[normalized$Plate == plate, c("Commit")] - mean_control  #
+}
+
+
+normalized_mean <- normalized %>% 
+  group_by(Treatment, Hematocrit) %>%
+  summarise(mean_commit = mean(Commit), sd = sd(Commit))
+normalized_mean$Hem_Treat <- paste(normalized_mean$Hematocrit, normalized_mean$Treatment)
+
+
+# png("saliva.png", width = 4, height = 3, units = "in", res = 300)
+ggplot(data = normalized_mean, aes(x=`Hem_Treat`, y=mean_commit)) +
+  geom_violin(data = normalized, aes(x=`Hem_Treat`, y=`Commit`)) +
+  geom_point(data = normalized_mean, aes(x=`Hem_Treat`, y=mean_commit, shape = Hematocrit, color = Treatment)) + 
+  geom_errorbar(data = normalized_mean, aes(ymin=mean_commit-sd, ymax=mean_commit+sd, color = Treatment, width=.2)) +
+  scale_color_manual(values=c("darkgoldenrod2",
+                              "lightslateblue",
+                              "salmon")) +
+  geom_hline(yintercept=0, linetype="dashed", color = "red") +
+  # ggtitle("Commitment proportion per group (normalized)") +
+  labs(y= "Normalized transmission investment", x = "Treatment") +
+  theme_classic() +
+  stat_summary(fun.data=mean_sdl, 
+                 geom="errorbar", fun.args = list(mult = 1), color="black")
+# dev.off()
+```
+
+
+Plot of singlets counts per uL across different plates, colored by replicate (row) the sample was located in. Earlier rows tend to have higher singlets counts for all plates except plate 4, showing a potential effect of replicate ID on the result. 
+
+```{r}
+fun_color_range <- colorRampPalette(c("red","purple","blue"))
+colors <- fun_color_range(5)
+
+# png("replicate.png", width = 4, height = 4, units = "in", res = 300)
+ggplot(data = flow_data) +
+  facet_wrap(. ~ Plate, scales = "free", nrow = 4) +
+  geom_boxplot(alpha = 0, aes(y=Plate, x=`Singlets Count/uL`)) +
+  geom_jitter(aes(y=1, x=`Singlets Count/uL`, color= Replicate, shape = Hematocrit)) +
+  scale_color_manual(values=colors) +
+  theme(strip.text.x = element_blank(), 
+        panel.background = element_rect(fill = "white",
+                                colour = "black",
+                                linewidth = 0.5, linetype = "solid"),
+        panel.grid.major = element_line(size = 0.5, linetype = 'solid',
+                                colour = "grey90"), 
+        panel.grid.minor = element_line(size = 0.25, linetype = 'solid',
+                                colour = "grey90"))
+```
+
+Similar plot showing iRBC counts across plates. 
+```{r}
+fun_color_range <- colorRampPalette(c("red","purple","blue"))
+colors <- fun_color_range(5)
+
+# png("replicate.png", width = 4, height = 4, units = "in", res = 300)
+ggplot(data = flow_data) +
+  facet_wrap(. ~ Plate, scales = "free", nrow = 4) +
+  geom_boxplot(alpha = 0, aes(y=Plate, x=`iRBCs Count`)) +
+  geom_jitter(aes(y=1, x=`iRBCs Count`, color= Replicate, shape = Hematocrit)) +
+  scale_color_manual(values=colors) +
+  theme(strip.text.x = element_blank(), 
+        panel.background = element_rect(fill = "white",
+                                colour = "black",
+                                linewidth = 0.5, linetype = "solid"),
+        panel.grid.major = element_line(size = 0.5, linetype = 'solid',
+                                colour = "grey90"), 
+        panel.grid.minor = element_line(size = 0.25, linetype = 'solid',
+                                colour = "grey90"))
+
+
+# png("replicate.png", width = 4, height = 4, units = "in", res = 300)
+ggplot(data = flow_data) +
+  facet_wrap(. ~ Plate, scales = "free", nrow = 4) +
+  geom_boxplot(alpha = 0, aes(y=Plate, x=`iRBC_tdT+ Count`)) +
+  geom_jitter(aes(y=1, x=`iRBC_tdT+ Count`, color= Replicate, shape = Hematocrit)) +
+  scale_color_manual(values=colors) +
+  theme(strip.text.x = element_blank(), 
+        panel.background = element_rect(fill = "white",
+                                colour = "black",
+                                linewidth = 0.5, linetype = "solid"),
+        panel.grid.major = element_line(size = 0.5, linetype = 'solid',
+                                colour = "grey90"), 
+        panel.grid.minor = element_line(size = 0.25, linetype = 'solid',
+                                colour = "grey90"))
+```
+
+
+
+
+
+### Cytometry clustering??
+
+Some of the cytometry plots showed issues that may indicate that the results (and any resulting analyses) may be untrustworthy. Here is a decent flow cytometry result for reference:
+
+<center>
+![Reliable flow cytometry plot: shows singlets mostly appearing within the boundaries of the first gates and iRBCs clearly separated from the uRBCs/sexual and asexual iRBCs clearly separated from each other.](cyto_good.png)
+</center>
+
+
+Some issues with the cytometry data include the following:
+
+
+
+- Plots show 'bleeding' between boundaries: gates were left to presets to avoid biasing data (with the exception of the first gate on plate 4), but on some wells the boundaries between iRBCs and uRBCs is more ambiguous, where singlets may arguably be on one side or the other. While this largely doesn't affect gametocyte counts, moving the gating up or down will decrease/increase counts of asexual iRBCs, which in turn increases/decreases the commitment proportion. 
+
+<center>
+![Separation of events at the second (upper right) and third gate (lower left) is more questionable.](cyto_bleed.png)
+</center>
+
+
+
+- Plots show comparatively sparse amounts of singlets/events. While events clearly fit within the gating (perhaps barring initial gating of singlets from events, see below), the number of points is relatively sparse overall. 
+
+<center>
+![Plot shows sparse number of events/singlets.](cyto_sparse.png)
+</center>
+
+
+
+- Plots show many events lying outside the initial gating which separates all events (all points recorded by the cytometer) from legitimate singlets (cells). This may potentially be an indication of dead cells (and thus potential issues during the procedure). The level of clustering outside of the first gate varies from sample to sample. Some plots show only show a small cluster of events outside the first gate (first example below), but otherwise the majority of the events fit within the gates. However, other plots show a majority of the points lying outside the gates (second and third example below), potentially leading to a large portion of points lying outside the first gate.
+
+<center>
+![Upper left plot shows 'light' clustering outside the first gate. Points outside the gate are typically found to the very left of the plot.](cyto_gating_light.png)
+</center>
+
+
+<center>
+![Upper left plot shows a majority of points clustering outside the first gate (again, to the left, slightly lower), resulting in sparser plots fo singlets.](cyto_gating_sparse.png)
+</center>
+
+
+
+<center>
+![An unusual example of clustering outside the gate, where most points are found clustering on the bottom left of the plot. This sample (from plate 4, female saliva & 0.5% hematocrit treatment row 2) is unusual, and its clustering pattern only shared with two other samples, both on plate 4 (female saliva & 1.0% hematocrit treatment row 5, and PBS control & 1.0% hematocrit treatment row 4).](cyto_gating.png)
+</center>
+
+
+
+The four plots below shows the counts of all events (dark gray bars) compared to the singlets count (colored portion) for each individual well for all four plates.  
+
+
+```{r}
+flow_data <- flow_data[order(flow_data$Treatments_FULL),]
+```
+
+```{r}
+for (plate in unique(flow_data$Plate)) {
+  dataset = flow_data[flow_data$Plate == plate,]
+  
+  print(ggplot() + 
+      geom_bar(data = dataset, aes(y=`All Events Count`, x=Treatments_FULL, color = Hematocrit), stat='identity') +
+      geom_bar(data = dataset, aes(y=`Singlets Count`, x=Treatments_FULL, fill = Treatment, color = Hematocrit), stat='identity') +
+      ggtitle(plate) + 
+      ylab("Counts") + xlab("Replicate") +
+      scale_fill_manual(values=c("darkgoldenrod2",
+                              "lightslateblue",
+                              "salmon")) +
+      scale_color_manual(values=c("darkgray",
+                             "black")) +
+      scale_x_discrete(labels= dataset$Replicate) + 
+      theme_classic()
+  )
+}
+```
+
+
+The next four plots below again shows the counts of all events (dark gray bars) compared to the singlets count (colored portion), but this time they are shown as proportions. Note that plate 2 seems to have abnormally low proportion of events counted as singlets, and plate 4, while mostly normal, has a few samples with abnormally low proportions, in particular row 2 of both the 0.5% hematocrit and female saliva treatment and the 0.5% hematocrit and male saliva treatment.
+
+```{r}
+for (plate in unique(flow_data$Plate)) {
+  dataset = flow_data[flow_data$Plate == plate,]
+  
+  print(ggplot() + 
+      geom_bar(data = dataset, aes(y=1, x=Treatments_FULL, color = Hematocrit), stat='identity') +
+      geom_bar(data = dataset, aes(y=`Singlets Count`/`All Events Count`, x=Treatments_FULL, fill = Treatment, color = Hematocrit), stat='identity') +
+      ggtitle(plate) + 
+      ylab("Proportion") + xlab("Replicate") +
+      scale_fill_manual(values=c("darkgoldenrod2",
+                              "lightslateblue",
+                              "salmon")) +
+      scale_color_manual(values=c("darkgray",
+                             "black")) +
+      scale_x_discrete(labels= dataset$Replicate) +
+      theme_classic()
+  )
+}
+```
+
+
+In plates 1-3, we see that the number of events and singlets counts decreases with replicate/row number (i.e. order the samples were made, with 1 being the first made and 5 being the last). We also generally see that the proportion of events counted as singlets decreases with replicate ID.
+
+
+Testing if percent of events captured as singlets affects proportion committed:
+```{r}
+fit_events <- glmer(cbind(`iRBC_tdT+ Count`, `iRBCs Count` - `iRBC_tdT+ Count`) ~ Treatment + Hematocrit + PercentSinglets + (1 | Plate/Replicate), data = flow_data, family = "binomial")
+summary(fit_events)
+```
+
+
+
+
+
+
