@@ -1,8 +1,9 @@
 ---
 title: "Write-up"
 output:
-  pdf_document: default
-  html_document: default
+  bookdown::pdf_document2:
+    toc: no
+    fig_caption: yes
 ---
 
 ```{r setup, include=FALSE}
@@ -42,7 +43,7 @@ Malaria parasite culture was first synchronized via sorbitol prior to preparatio
 
 <br>
 
-After two days (to allow for replication and investment), cell counts were taken via flow cytometry for each well plate. Samples were dyed to separate uninfected RBCs, asexual iRBCs, and gametocytes. First gate of cytometry results gated for singlets, second separates uRBCs from iRBCs (`iRBCs Count`, includes sexual and asexual), and the final gating separates uRBCs, asexual RBCs, and gametocytes (`iRBC_tdT+ Count`). We also calculate a proportion of cells commited to gametocytes (`Commit`) by dividing counts of gametocytes by counts of total iRBCs, i.e. $\frac{\text{iRBC_tdT+ Count}}{\text{iRBCs Count}}$. 
+After two days (to allow for replication and investment), cell counts were taken via flow cytometry for each well plate. Samples were dyed to separate uninfected RBCs, asexual iRBCs, and gametocytes. First gate of cytometry results gated for singlets, second separates uRBCs from iRBCs (`iRBCs Count`, includes sexual and asexual), and the final gating separates uRBCs, asexual RBCs, and gametocytes (`iRBC_tdT+ Count`). We also calculate a proportion of cells commited to gametocytes (`Commit`) by dividing counts of gametocytes by counts of total iRBCs, i.e. $\frac{\text{iRBC\_tdT+ Count}}{\text{iRBCs Count}}$. 
 
 
 
