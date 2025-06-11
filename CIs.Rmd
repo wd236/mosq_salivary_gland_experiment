@@ -1,0 +1,793 @@
+---
+title: "CIs"
+output: html_document
+---
+```{r setup, include=FALSE}
+# reading in necessary packages/data
+knitr::opts_chunk$set(echo = TRUE)
+library(readxl)
+library(tidyverse)
+library(lme4)
+library(grid)
+library(gridExtra)
+library(MuMIn)
+knitr::opts_chunk$set(tidy.opts=list(width.cutoff=60),tidy=TRUE)
+```
+
+```{r, include=FALSE}
+flow_data <- read_excel("graphing.xlsx") #, sheet = "Data")
+flow_data <- flow_data %>% drop_na()
+flow_data <- as.data.frame(flow_data[flow_data$`Take out` == "N",])
+columns <-c("Gams", "Total", "Commit", "Singlets Count/uL")
+flow_data[, columns] <- lapply(columns, function(x) as.numeric(flow_data[[x]]))
+
+flow_data[flow_data$Plate == "SGE_0", c("Plate")] <- "SGE-4"
+
+flow_data$Well <- paste(flow_data$Treatments_FULL, flow_data$Plate)
+flow_data$Hem_Treat <- paste(flow_data$Hematocrit, flow_data$Treatment)
+flow_data$PercentSinglets <- flow_data$`Singlets Count`/flow_data$`All Events Count`
+
+flow_data$Treatment <- factor(flow_data$Treatment, levels = c("PBS", "F", "M"))
+```
+
+setup above
+
+## Key for variable names (in code).
+
+* `iRBC_tdT+ Count` & `iRBCs Count`: Counts of gametocytes and total infected (asexual or gams) RBCs respectively, continuous. **This is the primary response variable.**
+* `Treatment`: Salivary treatment, i.e. treatment of PBS control or male or female saliva (categorical, three levels: `PBS, F, M`). **This is the primary treatment of interest.**
+* `Hematocrit`: Hematocrit treatment, i.e. 0.5% or 1.0% (*stored as categorical*, two levels: `0.5, 1.0`).
+* `Plate` (ID): Which plate sample was from (categorical, four levels: `SGE-1, SGE-2, SGE-3, SGE-4`). 
+* `Replicate` (ID): Which replicate (row) of plate sample was from (categorical, five levels: `R1, R2, R3, R4, R5` )
+
+
+<br>
+
+<br>
+
+
+
+
+## FIT ATTEMPTS
+
+```{r fit}
+# base model (has nesting)
+fit_1 <- glmer(cbind(`iRBC_tdT+ Count`, `iRBCs Count` - `iRBC_tdT+ Count`) ~ Treatment + Hematocrit + (1 | Plate/Replicate), data = flow_data, family = "binomial")
+summary(fit_1)
+anova(fit_1)
+```
+
+```{r fit_fixrep}
+# rep as fix
+fit_1 <- glmer(cbind(`iRBC_tdT+ Count`, `iRBCs Count` - `iRBC_tdT+ Count`) ~ Treatment + Hematocrit + Replicate + (1 | Plate), data = flow_data, family = "binomial")
+summary(fit_1)
+anova(fit_1)
+```
+```{r fit_norep}
+# no replicate
+fit_1 <- glmer(cbind(`iRBC_tdT+ Count`, `iRBCs Count` - `iRBC_tdT+ Count`) ~ Treatment + Hematocrit + (1 | Plate), data = flow_data, family = "binomial")
+summary(fit_1)  
+anova(fit_1)
+```
+```{r fit_no_nest}
+# base model no nesting
+fit <- glmer(cbind(`iRBC_tdT+ Count`, `iRBCs Count` - `iRBC_tdT+ Count`) ~ Treatment + Hematocrit + (1 | Plate) + (1|Replicate), data = flow_data, family = "binomial")
+summary(fit)
+anova(fit)
+```
+
+```{r fit_no_hemato}
+# no hemato
+fit_2 <- glmer(cbind(`iRBC_tdT+ Count`, `iRBCs Count` - `iRBC_tdT+ Count`) ~ Treatment + (1 | Plate/Replicate), data = flow_data, family = "binomial")
+summary(fit_2)
+```
+```{r}
+anova(fit_2, fit_1)  # base w/ nesting vs no hemato w/ nesting
+```
+```{r}
+# try merging F & M saliva into one
+flow_data$Treatment_bi <- flow_data$Treatment == "PBS"
+fit_3 <- glmer(cbind(`iRBC_tdT+ Count`, `iRBCs Count` - `iRBC_tdT+ Count`) ~ Treatment_bi + Hematocrit + (1 | Plate/Replicate), data = flow_data, family = "binomial")
+summary(fit_3)
+
+fit_4 <- glmer(cbind(`iRBC_tdT+ Count`, `iRBCs Count` - `iRBC_tdT+ Count`) ~ Treatment_bi + (1 | Plate/Replicate), data = flow_data, family = "binomial")
+summary(fit_4)
+```
+
+```{r}
+anova(fit_1, fit_2, fit_3, fit_4)
+```
+
+
+
+#### subsetting (to check if var matters)
+
+Just PBS
+```{r}
+flow_data_PBS <- flow_data[flow_data$Treatment == "PBS", ]
+```
+
+```{r}
+fit_test1 <- glmer(cbind(`iRBC_tdT+ Count`, `iRBCs Count` - `iRBC_tdT+ Count`) ~ Hematocrit + (1 | Plate), data = flow_data_PBS, family = "binomial")
+summary(fit_test1)
+```
+
+```{r}
+fit_test2 <- glmer(cbind(`iRBC_tdT+ Count`, `iRBCs Count` - `iRBC_tdT+ Count`) ~ Replicate + (1 | Plate), data = flow_data_PBS, family = "binomial")
+summary(fit_test2)
+```
+
+```{r}
+fit_test3 <- glmer(cbind(`iRBC_tdT+ Count`, `iRBCs Count` - `iRBC_tdT+ Count`) ~ Hematocrit + Replicate + (1 | Plate), data = flow_data_PBS, family = "binomial")
+summary(fit_test3)
+```
+```{r}
+fit_test4 <- glmer(cbind(`iRBC_tdT+ Count`, `iRBCs Count` - `iRBC_tdT+ Count`) ~ Hematocrit + (1 | Plate/Replicate), data = flow_data_PBS, family = "binomial")
+summary(fit_test4)
+```
+
+```{r}
+anova(fit_test1, fit_test2, fit_test3, fit_test4)
+```
+
+
+
+Only saliva
+
+```{r}
+flow_data_not_PBS <- flow_data[flow_data$Treatment != "PBS", ]
+```
+
+```{r}
+fit_test1 <- glmer(cbind(`iRBC_tdT+ Count`, `iRBCs Count` - `iRBC_tdT+ Count`) ~ Hematocrit + Treatment + (1 | Plate), data = flow_data_not_PBS, family = "binomial")
+summary(fit_test1)
+```
+
+```{r}
+fit_test2 <- glmer(cbind(`iRBC_tdT+ Count`, `iRBCs Count` - `iRBC_tdT+ Count`) ~ Replicate + Treatment + (1 | Plate), data = flow_data_not_PBS, family = "binomial")
+summary(fit_test2)
+```
+
+```{r}
+fit_test3 <- glmer(cbind(`iRBC_tdT+ Count`, `iRBCs Count` - `iRBC_tdT+ Count`) ~ Hematocrit  + Treatment+ Replicate + (1 | Plate), data = flow_data_not_PBS, family = "binomial")
+summary(fit_test3)
+```
+```{r}
+fit_test4 <- glmer(cbind(`iRBC_tdT+ Count`, `iRBCs Count` - `iRBC_tdT+ Count`) ~ Hematocrit + Treatment + (1 | Plate/Replicate), data = flow_data_not_PBS, family = "binomial")
+summary(fit_test4)
+```
+
+```{r}
+anova(fit_test1, fit_test2, fit_test3, fit_test4)
+```
+
+
+
+#### dredge
+```{r}
+dredge(glmer(cbind(`iRBC_tdT+ Count`, `iRBCs Count` - `iRBC_tdT+ Count`) ~ Treatment + Hematocrit + (1 | Replicate) + (1 | Plate), data = flow_data, family="binomial", na.action = na.pass))
+```
+
+```{r}
+dredge(glmer(cbind(`iRBC_tdT+ Count`, `iRBCs Count` - `iRBC_tdT+ Count`) ~ Treatment + Hematocrit + Replicate + (1 | Plate), data = flow_data, family="binomial", na.action = na.pass))
+```
+
+```{r}
+dredge(glmer(cbind(`iRBC_tdT+ Count`, `iRBCs Count` - `iRBC_tdT+ Count`) ~ Treatment + Hematocrit + (1 | Plate/Replicate), data = flow_data, family="binomial", na.action = na.pass))
+```
+
+
+#### STEVE: TESTING REPLICATE (VAR) AS:
+```{r}
+## FIT REPLICATE AS
+# as unorderered factor (original)
+fit_1 <- glmer(cbind(`iRBC_tdT+ Count`, `iRBCs Count` - `iRBC_tdT+ Count`) ~ Treatment + Hematocrit + (1 | Plate/Replicate), data = flow_data, family = "binomial")
+summary(fit_1)
+
+# as unorderered factor, no nesting
+flow_data_edit <- flow_data
+flow_data_edit$Replicate <- as.factor(flow_data_edit$Replicate)
+fit_1_1 <- glmer(cbind(`iRBC_tdT+ Count`, `iRBCs Count` - `iRBC_tdT+ Count`) ~ Treatment + Hematocrit + (1 | Plate) + (1|Replicate), data = flow_data_edit, family = "binomial") 
+summary(fit_1_1)
+
+# as unorderered factor, no nesting & Rep as fixed??
+fit_1_2 <- glmer(cbind(`iRBC_tdT+ Count`, `iRBCs Count` - `iRBC_tdT+ Count`) ~ Treatment + Hematocrit + Replicate + (1 | Plate), data = flow_data, family = "binomial")
+summary(fit_1_2)
+```
+
+
+```{r}
+# as orderered factor
+flow_data_edit <- flow_data
+flow_data_edit$Replicate <- ordered(flow_data$Replicate)
+fit_2 <- glmer(cbind(`iRBC_tdT+ Count`, `iRBCs Count` - `iRBC_tdT+ Count`) ~ Treatment + Hematocrit + (1 | Plate/Replicate), data = flow_data_edit, family = "binomial")
+summary(fit_2)   # zero change from fit_1????
+
+# no nesting
+fit_2_1 <- glmer(cbind(`iRBC_tdT+ Count`, `iRBCs Count` - `iRBC_tdT+ Count`) ~ Treatment + Hematocrit + (1 | Plate) + (1|Replicate), data = flow_data_edit, family = "binomial")
+summary(fit_2_1)  ## same
+
+# rep as fixed
+fit_2_2 <- glmer(cbind(`iRBC_tdT+ Count`, `iRBCs Count` - `iRBC_tdT+ Count`) ~ Treatment + Hematocrit + Replicate + (1 | Plate), data = flow_data_edit, family = "binomial")
+summary(fit_2_2)  # does change value but not sure if I love this
+# notes on polynomial contrasts: https://www.ndsu.edu/faculty/horsley/Polycnst.pdf
+```
+
+
+
+```{r}
+# as numeric???
+flow_data_edit <- flow_data
+flow_data_edit$Replicate[flow_data_edit$Replicate == "R1"] <- 1
+flow_data_edit$Replicate[flow_data_edit$Replicate == "R2"] <- 2
+flow_data_edit$Replicate[flow_data_edit$Replicate == "R3"] <- 3
+flow_data_edit$Replicate[flow_data_edit$Replicate == "R4"] <- 4
+flow_data_edit$Replicate[flow_data_edit$Replicate == "R5"] <- 5
+flow_data_edit$Replicate <- as.numeric(flow_data_edit$Replicate)
+fit_3 <- glmer(cbind(`iRBC_tdT+ Count`, `iRBCs Count` - `iRBC_tdT+ Count`) ~ Treatment + Hematocrit + (1 | Plate/Replicate), data = flow_data_edit, family = "binomial") 
+summary(fit_3)   # zero change from fit_1
+
+fit_3_1 <- glmer(cbind(`iRBC_tdT+ Count`, `iRBCs Count` - `iRBC_tdT+ Count`) ~ Treatment + Hematocrit + (1 | Plate) + (1|Replicate), data = flow_data_edit, family = "binomial")  
+summary(fit_3_1)  ## same as fit_2_1 (plate & rep as random non-nested)
+
+fit_3_2 <- glmer(cbind(`iRBC_tdT+ Count`, `iRBCs Count` - `iRBC_tdT+ Count`) ~ Treatment + Hematocrit + Replicate + (1 | Plate), data = flow_data_edit, family = "binomial")  
+summary(fit_3_2)
+
+```
+
+
+
+
+
+## PREV STUFF WITH NORMALIZING COMMITMENT
+(SAME FROM OTHER PART) Plot of (normalized) commitment proportion among salivary and hematocrit treatments. Violin plot shows distribution, the colored points show mean proportion of iRBCs in sample consisting of gametocytes (commitment), with error bars showing standard deviation. Normalization was done by subtracting weighted mean of control (weighted by singlets counts) from all data points, a process that was done individually for each plate to account for singlets count differences between plates. 
+
+```{r}
+normalized <- flow_data
+
+for (plate in unique(flow_data$Plate)) {
+  for (hem in unique(flow_data$Hematocrit)) {
+    # get weighted mean of control for the plate
+  control_commits <- normalized[normalized$Plate == plate & normalized$Treatment == "PBS" & normalized$Hematocrit == hem, c("Commit")]
+  weight_control <- normalized[normalized$Plate == plate & normalized$Treatment == "PBS"  & normalized$Hematocrit == hem, c("iRBCs Count")]
+  mean_control <- weighted.mean(control_commits,weight_control)
+  
+  # normalize
+  normalized[normalized$Plate == plate & normalized$Hematocrit == hem, c("Commit")] <- normalized[normalized$Plate == plate & normalized$Hematocrit == hem, c("Commit")] - mean_control  #
+  }
+}
+
+
+normalized_mean <- normalized %>% 
+  group_by(Treatment, Hematocrit, Plate) %>%
+  summarise(mean_commit = weighted.mean(Commit, `iRBCs Count`), sd = sd(Commit))
+normalized_mean$Hem_Treat <- paste(normalized_mean$Hematocrit, normalized_mean$Treatment)
+```
+```{r}
+ggplot(data = normalized_mean, aes(x=paste(Hematocrit, Plate), y=mean_commit, color = Treatment, group = Treatment)) +
+  geom_point(data = normalized_mean, aes(x=paste(Hematocrit, Plate), y=mean_commit), size= 2, position=position_dodge(.7)) + 
+  geom_errorbar(data = normalized_mean, aes(ymin=mean_commit-sd, ymax=mean_commit+sd, width=.2), position=position_dodge(.7)) +
+  scale_color_manual(values=c("darkgoldenrod2","salmon","lightslateblue")) +
+  geom_hline(yintercept=0, linetype="dashed", color = "red") +
+  labs(y= "Normalized transmission investment +/- sd", x = "Treatment") +
+  theme_classic()
+```
+
+```{r}
+fit_fixef <- fixef(fit_1)
+fit_coef <- coef(fit_1)
+
+# fit_confint_w <- confint(fit_1, oldNames = F, method = "Wald")
+fit_confint <- confint(fit_1, oldNames = F, method = "boot")
+```
+
+
+terrible graph w/ CIs from `confint` builtin functions? Based on fit outputs
+
+```{r}
+# CIs <- data.frame(Treatment = factor(c("PBS", "Female", "Male"), levels = c("PBS", "Female", "Male")), Commit = plogis(c(fit_fixef[1], fit_fixef[1] + fit_fixef[2], fit_fixef[1] + fit_fixef[3])))
+# CIs$low = plogis(c(fit_confint[3,1], fit_confint[3,1] + fit_confint[4,1], fit_confint[3,1] + fit_confint[5,1]))
+# CIs$high = plogis(c(fit_confint[3,2], fit_confint[3,2] + fit_confint[4,2], fit_confint[3,2] + fit_confint[5,2]))
+# 
+# ggplot(data = CIs, aes(x=Treatment, y=Commit, colour = Treatment)) +
+#   geom_point(data = CIs, aes(x=Treatment, y=Commit, colour = Treatment), size= 2) + 
+#   geom_errorbar(data = CIs, aes(ymin=low, ymax=high, width=.2)) +
+#   scale_color_manual(values=c("darkgoldenrod2","salmon","lightslateblue")) +
+#   labs(y= "Proportion of iRBCs committed +/- bootstrap CI", x = "Treatment") +
+#   theme_classic()
+```
+
+
+<br>
+
+<br>
+
+
+
+## CIs (NEW STUFF HERE)
+
+Some things about BSing:
+
+- how many to use (test multiple # of samples multiple times to see if results change): https://stats.stackexchange.com/questions/86040/rule-of-thumb-for-number-of-bootstrap-samples
+  - from above - Monte Carlo error: https://pmc.ncbi.nlm.nih.gov/articles/PMC3337209/
+  - Bootstrap algorithms for small samples (?): https://www.sciencedirect.com/science/article/pii/0378375891900135
+  - bootstrap CI guide for babies: https://bookdown.org/gregcox7/ims_psych/foundations-bootstrapping.html
+
+```{r wght.mn}
+# weighted mean function - should work the same as weighted.mean, but just in case
+wght.mn <- function(commits, weights) {
+  # commits: vector of commitment proportions (dependent variable, want to weigh by sample size)
+  # weights: vector of weights (sample sizes, i.e. iRBC counts)
+  
+  return(sum(commits*weights)/sum(weights))
+}
+```
+```{r weight.means}
+# The actual observed weighted means - per combination of treatments (4 plates * 2 hematocrits * 3 salivas = 24 total)
+weighted_means <- flow_data %>% 
+  group_by(Treatment, Hematocrit, Plate) %>%
+  summarise(mean_commit = wght.mn(Commit, `iRBCs Count`), `iRBCs Count` = `iRBCs Count`)
+weighted_means$Total_iRBCs_Plate <- NA
+for (plate in unique(weighted_means$Plate)) {
+  weighted_means[weighted_means$Plate == plate,]$Total_iRBCs_Plate <- log10(sum(weighted_means[weighted_means$Plate == plate,]$`iRBCs Count`))
+}
+```
+```{r plot.CI}
+# plotting CIs from outputs of bootstrap method
+plot_CI <- function(test_data, title) {
+  # test_data: data containing all the bootstrap values
+  # title: title for plot
+  error_bars <- test_data %>% group_by(Plate, Hematocrit, Treatment) %>% 
+  summarise(min = quantile(wm_Commits, 0.025), max = quantile(wm_Commits, 0.975))
+  
+  print(ggplot(test_data, ) +
+  geom_errorbar(data = error_bars, aes(x=paste(Plate, Hematocrit), ymin = min, ymax = max, color = Treatment), position=position_dodge(.7), width= 0.6) +
+  geom_point(data = weighted_means, aes(x=paste(Plate, Hematocrit), y=mean_commit, group = Treatment), position=position_dodge(.7)) +
+  scale_color_manual(values=c("darkgoldenrod2","salmon","lightslateblue")) +
+  labs(y= "Proportion of iRBCs committed +/- bootstrap CI", x = "Treatment") +
+  ggtitle(title) +
+  ylim(0, 0.13) +
+  theme_classic()
+  )
+}
+```
+
+
+
+### Meth. 1. 
+
+Bootstrapping via randomly selecting with replacement (equal chance for each sample) X number of samples (X being the number of samples found in each combination of hematocrit, salivary treatment, and plate - usually 5 samples, but some groups have 4), then taking the weighted mean of the selected samples. Perform process 1000 to 10000 times to build confidence intervals for each combination of treatments.
+
+```{r meth.1}
+# build method
+meth.1 <- function(bootstraps, data) {
+  # bootstraps: number of bootstrap samplings: 1000, 5000, 10000
+  # data: data input, should be flow_data (needs to include Plate, Hematocrit, Treatment, iRBCs Count, and Commit)
+  
+  CIs_1 <- data.frame(Plate = character(), 
+                      Hematocrit = character(), 
+                      Treatment = character(), 
+                      wm_Commits = numeric())
+  
+  # for each plate (4)
+  for (plate in unique(data$Plate)) {   
+    
+    # for each hematocrit treatment (2)
+    for (hemato in unique(data$Hematocrit)) {
+      
+      # for each salivary treatment (3)
+      for (salv in unique(data$Treatment)) {
+        
+        # filter down to the points from treatment group
+        filter_data <- data %>% 
+          filter(Plate == plate) %>% 
+          filter(Hematocrit == hemato) %>% 
+          filter(Treatment == salv)
+        filter_data <- as.data.frame(filter_data)
+        
+        # no. samples in each treatment group
+        no_wells <- nrow(filter_data)
+        
+        # vector of weighted means
+        wm_vec <- c()
+        # perform bootstrap sampling i number of times
+        for (i in 1:bootstraps) {
+          # randomly sample from observations w/ replacement
+          # we're sampling row numbers here so we can keep the commit values & sample sizes together, then mask for those rows
+          row_samples <- sample(1:no_wells, no_wells, replace = T)
+          boot_samples <- filter_data[row_samples, ]
+          
+          # get weighted mean, add to vector
+          wm_vec <- c(wm_vec, wght.mn(commits = boot_samples$Commit, weights = boot_samples$`iRBCs Count`))
+        }
+        
+        # add vector of bootstrap derived weighted mean commitment proportions to the full dataframe (with plate, hemato, and salv treatments)
+        all_boots <- data.frame(Plate = plate, Hematocrit = hemato, Treatment = salv, wm_Commits = wm_vec)
+        CIs_1 <- rbind(CIs_1, all_boots)
+      }
+    }
+  }
+  
+  # this is just to refactor the treatments so they show up in the order I want
+  CIs_1$Treatment <- factor(CIs_1$Treatment, levels = c("PBS", "F", "M"))
+  
+  return(CIs_1)
+}
+```
+
+
+```{r}
+test1 <- meth.1(10000, flow_data)
+```
+
+
+Boxplots of bootstrap values (boxplots) & observed weighted means (black points)
+
+```{r}
+plot_CI(test1, "Meth 1, 10000 points")
+```
+
+
+
+
+
+<br>
+
+
+### Meth. 2. 
+
+Similar to above, we perform bootstrapping via selecting with replacement X number of samples, but with weighting based on iRBC count, then taking the weighted mean (? or maybe regular mean) of the 5 samples. Perform process 1000 to 10000 times to build confidence intervals.
+
+```{r meth.2}
+# build method
+meth.2 <- function(bootstraps, data) {
+  # bootstraps: number of bootstrap samplings: 1000, 5000, 10000
+  # data: data input, should be flow_data (needs to include Plate, Hematocrit, Treatment, iRBCs Count, and Commit)
+  
+  CIs_2 <- data.frame(Plate = character(), 
+                      Hematocrit = character(), 
+                      Treatment = character(), 
+                      wm_Commits = numeric())
+  
+  # for each plate (4)
+  for (plate in unique(data$Plate)) {   
+    
+    # for each hematocrit treatment (2)
+    for (hemato in unique(data$Hematocrit)) {
+      
+      # for each salivary treatment (3)
+      for (salv in unique(data$Treatment)) {
+        
+        # filter down to the points from treatment group
+        filter_data <- data %>% 
+          filter(Plate == plate) %>% 
+          filter(Hematocrit == hemato) %>% 
+          filter(Treatment == salv)
+        filter_data <- as.data.frame(filter_data)
+        
+        # no. samples in each treatment group
+        no_wells <- nrow(filter_data)
+        
+        # vector of NON-weighted means
+        wm_vec <- c()
+        # perform bootstrap sampling i number of times
+        for (i in 1:bootstraps) {
+          # randomly sample from observations w/ replacement
+          # sample row numbers USING WEIGHTS - iRBC counts
+          row_samples <- sample(1:no_wells, no_wells, replace = T, prob = filter_data$`iRBCs Count`)
+          boot_samples <- filter_data[row_samples, ]
+          
+          # get NON-weighted mean (? might change this, but taking another weighted mean feels like double dipping), add to vector
+          wm_vec <- c(wm_vec, mean(boot_samples$Commit))
+        }
+        
+        # add vector of bootstrap derived weighted mean commitment proportions to the full dataframe (with plate, hemato, and salv treatments)
+        all_boots <- data.frame(Plate = plate, Hematocrit = hemato, Treatment = salv, wm_Commits = wm_vec)
+        CIs_2 <- rbind(CIs_2, all_boots)
+      }
+    }
+  }
+  
+  # this is just to refactor the treatments so they show up in the order I want
+  CIs_2$Treatment <- factor(CIs_2$Treatment, levels = c("PBS", "F", "M"))
+  
+  return(CIs_2)
+}
+```
+
+
+```{r}
+test1 <- meth.2(10000, flow_data)
+```
+
+
+Boxplots of bootstrap values (boxplots) & observed weighted means (black points)
+
+```{r}
+plot_CI(test1, "Meth 2, 10000 points")
+```
+
+
+
+
+
+### Meth. 3. 
+
+Binomial deviates - for each sample in each treatment group (combination of salivary treatment, hematocrit, and plate - again, usually 5 samples but sometimes 4), we calculate an `rbinom` output using the observed commitment proportion as the probability of success `prob` and the number of iRBCs in the sample as `size`. We then take the weighted mean commitment proportion of the treatment group. Perform process 1000 to 10000 times for confidence intervals. 
+
+(Note - the more I think about this one the more places I feel there's potential to double dip on error??)
+
+```{r meth.3}
+# build method
+meth.3 <- function(bootstraps, data) {
+  # bootstraps: number of bootstrap samplings: 1000, 5000, 10000
+  # data: data input, should be flow_data (needs to include Plate, Hematocrit, Treatment, iRBCs Count, and Commit)
+  
+  CIs_3 <- data.frame(Plate = character(), 
+                      Hematocrit = character(), 
+                      Treatment = character(), 
+                      wm_Commits = numeric())
+  
+  # for each plate (4)
+  for (plate in unique(data$Plate)) {   
+    
+    # for each hematocrit treatment (2)
+    for (hemato in unique(data$Hematocrit)) {
+      
+      # for each salivary treatment (3)
+      for (salv in unique(data$Treatment)) {
+        
+        # filter down to the points from treatment group
+        filter_data <- data %>% 
+          filter(Plate == plate) %>% 
+          filter(Hematocrit == hemato) %>% 
+          filter(Treatment == salv)
+        filter_data <- as.data.frame(filter_data)
+        
+        # no. samples in each treatment group
+        no_wells <- nrow(filter_data)
+        
+        # vector of weighted means
+        wm_vec <- c()
+        # perform bootstrap sampling i number of times
+        for (i in 1:bootstraps) {
+          # get rbinom output if [rRBC count] number of trials with [obs commit] probability
+          ## although if we're using the observed commit as probability we're probably doubling down on error potentially..... maybe use weighted mean of whole group as a consistant prob for all 5/4 samples?
+          new_commits <- numeric(no_wells)
+          for (j in 1:no_wells) {
+            new_commits[j] <- rbinom(1, size = filter_data$`iRBCs Count`[j], prob = filter_data$Commit[j])/filter_data$`iRBCs Count`[j]  #divide for commit/proportion
+          }
+          
+          # get weighted mean
+          wm_vec <- c(wm_vec, wght.mn(commits = new_commits, weights = filter_data$`iRBCs Count`))
+        }
+        
+        # add vector of bootstrap derived weighted mean commitment proportions to the full dataframe (with plate, hemato, and salv treatments)
+        all_boots <- data.frame(Plate = plate, Hematocrit = hemato, Treatment = salv, wm_Commits = wm_vec)
+        CIs_3 <- rbind(CIs_3, all_boots)
+      }
+    }
+  }
+  
+  # refactor the treatments
+  CIs_3$Treatment <- factor(CIs_3$Treatment, levels = c("PBS", "F", "M"))
+  
+  return(CIs_3)
+}
+```
+
+
+
+```{r}
+test1 <- meth.3(10000, flow_data)
+```
+
+
+Boxplots of bootstrap values (boxplots) & observed weighted means (black points)
+
+```{r}
+plot_CI(test1, "Meth 3, 10000 points")
+```
+
+
+
+
+
+
+
+### Meth. 4. 
+We build the (expected) confidence intervals by first calculating the weighted mean commitment for the null (PBS) treatment for each hematocrit/plate. Then for each sample in the other M/F treatments, we calculate X number of `rbinom` outputs with the number of trials `size` being the iRBC counts for each sample and the probability of success `prob` being the observed weighted mean of the null. Perform process 1000 to 10000 times for confidence intervals. After building confidence intervals, we compare to the observed weighted mean of the M/F treatment groups to see if the observed falls within the expected. 
+
+(NOTE: The idea is to control for the error/outliers you can get if the sample size (i.e. cell count) is really small.)
+
+```{r meth.4}
+# build method
+meth.4 <- function(bootstraps, data) {
+  # bootstraps: number of bootstrap samplings: 1000, 5000, 10000
+  # data: data input, should be flow_data (needs to include Plate, Hematocrit, Treatment, iRBCs Count, and Commit)
+  
+  CIs_4 <- data.frame(Plate = character(), 
+                      Hematocrit = character(), 
+                      Treatment = character(), 
+                      wm_Commits = numeric())
+  
+  # for each plate (4)
+  for (plate in unique(data$Plate)) {   
+    
+    # for each hematocrit treatment (2)
+    for (hemato in unique(data$Hematocrit)) {
+      
+      # GET NULL (PBS) COMMIT
+      null_commit <- weighted_means[weighted_means$Plate == plate & weighted_means$Hematocrit == hemato & weighted_means$Treatment == "PBS",]$mean_commit
+      
+      # for each salivary treatment (3)
+      for (salv in unique(data$Treatment)) {
+        
+        # filter down to the points from treatment group
+        filter_data <- data %>% 
+          filter(Plate == plate) %>% 
+          filter(Hematocrit == hemato) %>% 
+          filter(Treatment == salv)
+        filter_data <- as.data.frame(filter_data)
+        
+        # no. samples in each treatment group
+        no_wells <- nrow(filter_data)
+        
+        # vector of weighted means
+        wm_vec <- c()
+        # perform bootstrap sampling i number of times
+        for (i in 1:bootstraps) {
+          
+          # we want X number of commitment proportions
+          new_commits <- numeric(no_wells)
+          for (j in 1:no_wells) {
+            new_commits[j] <- rbinom(1, size = filter_data$`iRBCs Count`[j], prob = null_commit)/filter_data$`iRBCs Count`[j]  #divide for commit/proportion
+          }
+          
+          # weighted mean (again)
+          wm_vec <- c(wm_vec, wght.mn(commits = new_commits, weights = filter_data$`iRBCs Count`))
+        }
+        
+        # add vector of bootstrap derived weighted mean commitment proportions to the full dataframe (with plate, hemato, and salv treatments)
+        all_boots <- data.frame(Plate = plate, Hematocrit = hemato, Treatment = salv, wm_Commits = wm_vec)
+        CIs_4 <- rbind(CIs_4, all_boots)
+      }
+    }
+  }
+  
+  # refactor the treatments
+  CIs_4$Treatment <- factor(CIs_4$Treatment, levels = c("PBS", "F", "M"))
+  
+  return(CIs_4)
+}
+```
+
+
+
+```{r}
+test1 <- meth.4(10000, flow_data)
+```
+
+
+Boxplots of bootstrap values (boxplots) & observed weighted means (black points)
+
+```{r}
+plot_CI(test1, "Meth 4, 10000 points")
+```
+
+
+
+
+
+
+
+### POSTER GRAPH
+```{r}
+test1 <- meth.4(10000, flow_data)
+```
+
+Boxplots of bootstrap values (boxplots) & observed weighted means (black points)
+
+```{r}
+error_bars <- test1 %>% group_by(Plate, Hematocrit, Treatment) %>% 
+  summarise(min = quantile(wm_Commits, 0.025), max = quantile(wm_Commits, 0.975))
+
+weighted_means <- flow_data %>% 
+  group_by(Treatment, Hematocrit, Plate) %>%
+  summarise(mean_commit = wght.mn(Commit, `iRBCs Count`), `iRBCs Count` = `iRBCs Count`)
+weighted_means$`Total iRBCs (per Plate)` <- NA
+for (plate in unique(weighted_means$Plate)) {
+  weighted_means[weighted_means$Plate == plate,]$`Total iRBCs (per Plate)` <- sum(weighted_means[weighted_means$Plate == plate,]$`iRBCs Count`)
+}
+
+plot_PBS <- ggplot() +
+  geom_errorbar(data = error_bars[error_bars$Treatment == "PBS",], aes(x=paste(Plate, Hematocrit), ymin = min, ymax = max, group = Treatment), position=position_dodge(.7), width= 0.6) +
+  geom_point(data = weighted_means[weighted_means$Treatment == "PBS",], aes(x=paste(Plate, Hematocrit), y=mean_commit, group = Treatment, size = `Total iRBCs (per Plate)`), position=position_dodge(.7)) +
+  scale_size(range = c(1,3)) +
+  #scale_color_manual(values=c("salmon","lightslateblue")) +
+  #ylab("") + xlab("") + ggtitle("") +
+  labs(y= "Proportion of iRBCs committed +/- bootstrap CI", x = "Treatment") +
+  # ggtitle("Observed mean prop. committed vs expected bootstrap CI") +
+  ylim(0, 0.12) +
+  guides(size = "none") +
+  theme(panel.background = element_rect(fill = "white",
+                                colour = "black",
+                                size = 0.5, linetype = "solid"),
+        #axis.title.x=element_blank(),
+        #axis.text.x=element_blank()
+        )
+
+
+plot_treat <- ggplot() +
+  geom_errorbar(data = error_bars[error_bars$Treatment != "PBS",], aes(x=paste(Plate, Hematocrit), ymin = min, ymax = max, group = Treatment), position=position_dodge(.7), width= 0.6) +
+  geom_point(data = weighted_means[weighted_means$Treatment != "PBS",], aes(x=paste(Plate, Hematocrit), y=mean_commit, group = Treatment, color = Treatment, size = `Total iRBCs (per Plate)`), position=position_dodge(.7)) +
+  scale_size(range = c(1,3)) +
+  scale_color_manual(values=c("salmon","lightslateblue")) +
+  #ylab("") + xlab("") + ggtitle("") +
+  labs(y= "Proportion of iRBCs committed +/- bootstrap CI", x = "Treatment") +
+  # ggtitle("Observed mean prop. committed vs expected bootstrap CI") +
+  ylim(0, 0.12) +
+  #guides(size = "none") +
+  theme(panel.background = element_rect(fill = "white",
+                                colour = "black",
+                                size = 0.5, linetype = "solid"),
+        #axis.title.x=element_blank(),
+        #axis.text.x=element_blank()
+        )
+```
+```{r}
+#png("poster_CIs.png", width = 9.5, height = 4, units = "in", res = 300)
+g1 <- ggplotGrob(plot_PBS)
+g2 <- ggplotGrob(plot_treat)
+# g <- cbind(g1, g2, size = "first")
+# g$widths <- unit.pmax(g1$widths, g2$widths)
+# grid.newpage()
+# grid.draw(g)
+grid.arrange(plot_PBS, plot_treat, layout_matrix = matrix(c(1, 2, 2), ncol = 3))
+#dev.off()
+```
+
+
+```{r}
+#png("poster_reps.png", width = 4.5, height = 3, units = "in", res = 300)
+fun_color_range <- colorRampPalette(c("salmon","lightslateblue"))
+colors <- fun_color_range(4)
+
+ggplot(data = flow_data, aes(x=Replicate, y=log10(`Singlets Count/uL`), shape = Hematocrit, fill = Plate, color = Plate, group = paste(Hematocrit, Plate))) +
+  geom_jitter() +
+  geom_smooth(method='lm', formula= y~x, alpha = 0.15) + 
+  # geom_jitter(aes(y=1, x=`Singlets Count/uL`, color= Replicate, shape = Hematocrit)) +
+  # ylab("") + xlab("") + ggtitle("") +
+  scale_color_manual(values=colors) + scale_fill_manual(values=colors) +
+  theme(strip.text.x = element_blank(), 
+        panel.background = element_rect(fill = "white",
+                                colour = "black",
+                                size = 0.5, linetype = "solid"),
+        #axis.title.x=element_blank(),
+        #axis.text.x=element_blank()
+        )
+#dev.off()
+```
+```{r}
+#png("poster_reps2.png", width = 5, height = 3, units = "in", res = 300)
+fun_color_range <- colorRampPalette(c("red","purple","blue"))
+colors <- fun_color_range(5)
+
+# png("replicate.png", width = 4, height = 4, units = "in", res = 300)
+ggplot(data = flow_data) +
+  facet_wrap(. ~ Plate, scales = "free", nrow = 4) +
+  geom_boxplot(alpha = 0, aes(y=Plate, x=`Singlets Count/uL`)) +
+  geom_jitter(aes(y=1, x=`Singlets Count/uL`, color= Replicate, shape = Hematocrit)) +
+  scale_color_manual(values=colors) +
+  theme(strip.text.x = element_blank(), 
+        panel.background = element_rect(fill = "white",
+                                colour = "black",
+                                size = 0.5, linetype = "solid"),
+        panel.grid.major = element_line(size = 0.5, linetype = 'solid',
+                                colour = "grey90"), 
+        panel.grid.minor = element_line(size = 0.25, linetype = 'solid',
+                                colour = "grey90"))
+#dev.off()
+```
+
+
